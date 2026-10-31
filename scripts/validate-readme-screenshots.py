@@ -43,10 +43,10 @@ def main() -> int:
 
     # Files mentioned in the manifest.
     in_manifest = sorted(
-        set(
+        {
             m.group(1).strip()
             for m in re.finditer(r"\|\s*\d+\s*\|\s*(docs/screenshots/[^|\s]+)\s*\|", manifest_text)
-        )
+        }
     )
 
     missing_from_readme = sorted(set(on_disk) - set(referenced))

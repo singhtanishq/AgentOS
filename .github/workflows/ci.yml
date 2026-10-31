@@ -38,9 +38,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --project services/agent-runtime
       - name: Ruff
-        run: uv run --project services/agent-runtime ruff check .
+        run: uv run --project services/agent-runtime ruff check services/agent-runtime
       - name: Mypy
-        run: uv run --project services/agent-runtime mypy app
+        run: uv run --project services/agent-runtime mypy services/agent-runtime/app
       - name: Tests
         run: uv run --project services/agent-runtime pytest
 
@@ -55,9 +55,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --project services/sdk-python
       - name: Ruff
-        run: uv run --project services/sdk-python ruff check .
+        run: uv run --project services/sdk-python ruff check services/sdk-python
       - name: Mypy
-        run: uv run --project services/sdk-python mypy agentos
+        run: uv run --project services/sdk-python mypy services/sdk-python/agentos
       - name: Tests
         run: uv run --project services/sdk-python pytest
 
@@ -101,15 +101,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 12
-      nats:
-        image: nats:2.11-alpine
-        ports:
-          - 4222:4222
-        options: >-
-          --health-cmd "wget -q -O /dev/null http://localhost:8222/healthz || exit 1"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -119,6 +110,14 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+      - name: Start NATS with JetStream (service containers cannot pass command args)
+        run: |
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2.11-alpine -js -m 8222
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8222/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8222/healthz >/dev/null
       - name: Start OPA (service containers cannot pass image command args)
         run: |
           docker run -d --name opa -p 8181:8181 openpolicyagent/opa:1.12.3-static             run --server --addr=0.0.0.0:8181
