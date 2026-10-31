@@ -50,9 +50,11 @@ class MockProvider:
             (m for m in reversed(request.messages) if m.role == "user"), None
         )
         user_text = last_user.content if last_user else ""
+        # After a tool result the model answers — no repeat calls.
+        saw_tool_result = any(m.role == "tool" for m in request.messages)
 
         # Scripted explicit tool directive.
-        directive = _TOOL_DIRECTIVE.search(user_text)
+        directive = _TOOL_DIRECTIVE.search(user_text) if not saw_tool_result else None
         if directive:
             name, raw_args = directive.group(1), directive.group(2)
             if name in tool_names or not request.tools:
@@ -65,8 +67,8 @@ class MockProvider:
                     request, "", "tool_calls", (call,), prompt_text
                 )
 
-        # Implicit arithmetic → calculator tool call.
-        arithmetic = _ARITHMETIC.search(user_text)
+        # Implicit arithmetic → calculator tool call (once per conversation).
+        arithmetic = _ARITHMETIC.search(user_text) if not saw_tool_result else None
         if arithmetic and "calculator" in tool_names:
             expression = " ".join(arithmetic.group(0).split())
             call = ToolCall(
@@ -87,11 +89,16 @@ class MockProvider:
             f"{request.model}:{user_text}".encode()
         ).hexdigest()[:8]
         topic = user_text.strip().splitlines()[0][:120] if user_text.strip() else "the request"
-        steps = [
-            f"Analysis of: {topic}",
-            "Key considerations identified from the available context.",
-            f"Recommended action plan (reference {digest}).",
+        tool_results = [
+            m.content for m in request.messages if m.role == "tool"
         ]
+        steps = [f"Analysis of: {topic}"]
+        if tool_results:
+            steps.append(
+                "Tool results incorporated: " + "; ".join(tool_results[-2:])
+            )
+        steps.append("Key considerations identified from the available context.")
+        steps.append(f"Recommended action plan (reference {digest}).")
         return "\n".join(f"{i}. {s}" for i, s in enumerate(steps, start=1))
 
     def _respond(

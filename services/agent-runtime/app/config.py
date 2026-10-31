@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     nats_url: str = "nats://localhost:4222"
     opa_url: str = "http://localhost:8181"
     database_url: str = "postgres://agentos:agentos_dev@localhost:5432/agentos"
+    # The worker connects with the narrow agentos_worker role.
+    worker_database_url: str = "postgres://agentos_worker:agentos_app_dev@localhost:5432/agentos"
+    # Shared secret for control-plane internal endpoints. The default is a
+    # documented local development value; production requires an override
+    # (validated by the control plane config on its side).
+    internal_api_token: str = "internal-dev-token"  # noqa: S105 - local dev default
 
 
 @lru_cache

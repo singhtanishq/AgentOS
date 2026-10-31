@@ -13,18 +13,21 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/agents"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/executions"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/httpx"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/models"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/organizations"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/queue"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 )
 
 // Deps carries the wired application dependencies for feature routes.
 type Deps struct {
-	Store   *store.Store
-	Secrets *secrets.Manager
+	Store     *store.Store
+	Secrets   *secrets.Manager
+	Publisher *queue.Publisher
 }
 
 // NewRouter builds the top-level mux for the control plane API.
@@ -101,6 +104,19 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Put("/status", agentHandler.UpdateStatus)
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions", agentHandler.CreateVersion)
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions/{version}/publish", agentHandler.PublishVersion)
+		})
+	})
+
+	// Execution management.
+	executionsHandler := &executions.Handler{Store: deps.Store, Publisher: deps.Publisher, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/executions", func(ex chi.Router) {
+		ex.Use(requireAuth)
+		ex.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", executionsHandler.List)
+		ex.With(auth.RequireOrg(deps.Store, auth.PermSubmitExecutions, logger)).Post("/", executionsHandler.Submit)
+		ex.Route("/{executionId}", func(e chi.Router) {
+			e.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", executionsHandler.Get)
+			e.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/events", executionsHandler.Events)
+			e.With(auth.RequireOrg(deps.Store, auth.PermCancelExecutions, logger)).Post("/cancel", executionsHandler.Cancel)
 		})
 	})
 

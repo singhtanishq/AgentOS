@@ -19,6 +19,7 @@ import (
 
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/queue"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/server"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
@@ -59,8 +60,25 @@ func run() error {
 		return fmt.Errorf("build secrets manager: %w", err)
 	}
 
+	// NATS JetStream: the durable execution queue. Required to accept
+	// submissions; degraded readiness is reported when unavailable.
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	publisher, err := queue.Connect(connectCtx, cfg.NATSURL)
+	connectCancel()
+	if err != nil {
+		return fmt.Errorf("connect queue: %w", err)
+	}
+	defer publisher.Close()
+	ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	err = queue.EnsureStream(ensureCtx, publisher.JetStream(), logger)
+	ensureCancel()
+	if err != nil {
+		return fmt.Errorf("ensure jetstream topology: %w", err)
+	}
+	readiness.Register("nats", func(ctx context.Context) error { return publisher.Healthy(ctx) })
+
 	srv := &http.Server{
-		Handler:           server.NewRouter(cfg, logger, readiness, &server.Deps{Store: st, Secrets: secretsManager}),
+		Handler:           server.NewRouter(cfg, logger, readiness, &server.Deps{Store: st, Secrets: secretsManager, Publisher: publisher}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
