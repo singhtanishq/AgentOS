@@ -110,11 +110,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 12
-      opa:
-        image: openpolicyagent/opa:1.12.3-static
-        ports:
-          - 8181:8181
-        args: ["run", "--server", "--addr=0.0.0.0:8181"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -124,6 +119,14 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+      - name: Start OPA (service containers cannot pass image command args)
+        run: |
+          docker run -d --name opa -p 8181:8181 openpolicyagent/opa:1.12.3-static             run --server --addr=0.0.0.0:8181
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8181/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8181/health >/dev/null
       - name: Go migrations + integration tests
         run: go test -C services/control-plane -tags=integration -count=1 ./tests/ ./migrations/
       - name: Seed runtime test schema
