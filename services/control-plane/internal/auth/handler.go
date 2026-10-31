@@ -107,8 +107,13 @@ func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		switch constraintName(err) {
+		case "users_email_key":
 			httpx.Error(w, r, http.StatusConflict, "email_taken", "an account with this email already exists")
+			return
+		case "organizations_slug_key":
+			httpx.Error(w, r, http.StatusConflict, "name_unavailable",
+				"an organization with a similar name already exists — choose another name")
 			return
 		}
 		h.Logger.Error("signup failed", slog.Any("error", err))
@@ -284,11 +289,12 @@ func (h *Handler) auditAsync(r *http.Request, e audit.Entry) {
 	}(context.WithoutCancel(r.Context()))
 }
 
-// isUniqueViolation reports PostgreSQL unique constraint violations (23505).
-func isUniqueViolation(err error) bool {
+// constraintName extracts the violated constraint from a PostgreSQL
+// unique violation, or "" for other errors.
+func constraintName(err error) string {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505"
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return pgErr.ConstraintName
 	}
-	return false
+	return ""
 }

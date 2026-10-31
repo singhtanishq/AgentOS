@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/agents"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
@@ -83,6 +84,22 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 
 	// Invitation acceptance is user-scoped, not org-scoped.
 	r.With(requireAuth).Post("/v1/invitations/accept", orgHandler.AcceptInvitation)
+
+	// Agent registry.
+	agentHandler := &agents.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/agents", func(agentRoutes chi.Router) {
+		agentRoutes.Use(requireAuth)
+		agentRoutes.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", agentHandler.List)
+		agentRoutes.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/", agentHandler.Create)
+		agentRoutes.Route("/{agentId}", func(agent chi.Router) {
+			agent.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", agentHandler.Get)
+			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Patch("/", agentHandler.Update)
+			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Delete("/", agentHandler.Delete)
+			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Put("/status", agentHandler.UpdateStatus)
+			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions", agentHandler.CreateVersion)
+			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions/{version}/publish", agentHandler.PublishVersion)
+		})
+	})
 
 	// API root.
 	r.Get("/v1", func(w http.ResponseWriter, req *http.Request) {

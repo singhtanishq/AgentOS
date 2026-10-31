@@ -5,10 +5,10 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
@@ -41,7 +41,8 @@ func newAuthTestServer(t *testing.T) *authTestServer {
 }
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Tests log to stderr: silent failure modes cost far more than noise.
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
 
 func (a *authTestServer) do(method, path, cookie string, body any) (*http.Response, map[string]any) {
