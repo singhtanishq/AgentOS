@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,11 +12,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/server"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 )
@@ -49,8 +54,13 @@ func run() error {
 	defer st.Close()
 	readiness.Register("postgres", func(ctx context.Context) error { return st.Ping(ctx) })
 
+	secretsManager, err := buildSecretsManager(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("build secrets manager: %w", err)
+	}
+
 	srv := &http.Server{
-		Handler:           server.NewRouter(cfg, logger, readiness, &server.Deps{Store: st}),
+		Handler:           server.NewRouter(cfg, logger, readiness, &server.Deps{Store: st, Secrets: secretsManager}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -88,6 +98,40 @@ func run() error {
 	}
 	logger.Info("control plane stopped cleanly")
 	return nil
+}
+
+// buildSecretsManager assembles the versioned key set. AGENTOS_SECRETS_KEYS
+// accepts "1:<base64>,2:<base64>" for rotation; AGENTOS_SECRETS_MASTER_KEY
+// provides a single version-1 key. Development environments without either
+// use a fixed, documented dev key — production refuses to start.
+func buildSecretsManager(cfg config.Config, logger *slog.Logger) (*secrets.Manager, error) {
+	if raw := os.Getenv("AGENTOS_SECRETS_KEYS"); raw != "" {
+		keys := make(map[int]string)
+		for _, part := range strings.Split(raw, ",") {
+			version, key, ok := strings.Cut(strings.TrimSpace(part), ":")
+			if !ok {
+				return nil, fmt.Errorf("AGENTOS_SECRETS_KEYS entry %q is not <version>:<base64>", part)
+			}
+			v, err := strconv.Atoi(version)
+			if err != nil {
+				return nil, fmt.Errorf("AGENTOS_SECRETS_KEYS version %q is not numeric", version)
+			}
+			keys[v] = key
+		}
+		return secrets.NewManager(keys)
+	}
+	if cfg.SecretsMasterKey != "" {
+		return secrets.NewManager(map[int]string{1: cfg.SecretsMasterKey})
+	}
+	if cfg.Env == "production" {
+		return nil, fmt.Errorf("AGENTOS_SECRETS_MASTER_KEY is required in production")
+	}
+	// Deterministic local-only development key (documented, not a secret).
+	sum := sha256.Sum256([]byte("agentos-local-development-master-key"))
+	logger.Warn("using the fixed local development master key — never use outside development")
+	return secrets.NewManager(map[int]string{
+		1: base64.StdEncoding.EncodeToString(sum[:]),
+	})
 }
 
 func newLogger(level string) *slog.Logger {

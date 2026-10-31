@@ -4,7 +4,10 @@ package tests
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/server"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 )
@@ -34,7 +38,15 @@ func newAuthTestServer(t *testing.T) *authTestServer {
 	}
 	logger := discardLogger()
 	st := &store.Store{Pool: p}
-	router := server.NewRouter(cfg, logger, health.NewRegistry(), &server.Deps{Store: st})
+	// Test secrets manager: deterministic key, same envelope format as prod.
+	sum := sha256.Sum256([]byte("agentos-integration-test-master-key"))
+	secretsManager, err := secrets.NewManager(map[int]string{
+		1: base64.StdEncoding.EncodeToString(sum[:]),
+	})
+	if err != nil {
+		t.Fatalf("secrets manager: %v", err)
+	}
+	router := server.NewRouter(cfg, logger, health.NewRegistry(), &server.Deps{Store: st, Secrets: secretsManager})
 	ts := httptest.NewServer(router)
 	t.Cleanup(ts.Close)
 	return &authTestServer{t: t, server: ts, client: ts.Client()}
@@ -45,7 +57,9 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
 
-func (a *authTestServer) do(method, path, cookie string, body any) (*http.Response, map[string]any) {
+// doRaw performs a request and returns the response, parsed JSON body and
+// the raw response bytes (for leak assertions).
+func (a *authTestServer) doRaw(method, path, cookie string, body any) (*http.Response, map[string]any, string) {
 	a.t.Helper()
 	var reader *bytes.Reader
 	if body != nil {
@@ -70,10 +84,21 @@ func (a *authTestServer) do(method, path, cookie string, body any) (*http.Respon
 		a.t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil && resp.ContentLength != 0 {
-		a.t.Fatalf("%s %s: decode response: %v", method, path, err)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		a.t.Fatalf("%s %s: read response: %v", method, path, err)
 	}
+	var out map[string]any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &out); err != nil {
+			a.t.Fatalf("%s %s: decode response %q: %v", method, path, string(raw[:min(len(raw), 120)]), err)
+		}
+	}
+	return resp, out, string(raw)
+}
+
+func (a *authTestServer) do(method, path, cookie string, body any) (*http.Response, map[string]any) {
+	resp, out, _ := a.doRaw(method, path, cookie, body)
 	return resp, out
 }
 

@@ -28,6 +28,7 @@ type Config struct {
 	SessionCookieName string
 	SessionTTL        time.Duration
 	SecretsMasterKey  string // base64 AES-256 key for credential encryption (32 bytes decoded)
+	InternalAPIToken  string // bearer token for internal service-to-service endpoints
 
 	// Observability.
 	LogLevel     string
@@ -49,6 +50,7 @@ func Load() (Config, error) {
 		SessionCookieName: envOr("AGENTOS_SESSION_COOKIE", "agentos_session"),
 		SessionTTL:        envDurationOr("AGENTOS_SESSION_TTL", 12*time.Hour),
 		SecretsMasterKey:  os.Getenv("AGENTOS_SECRETS_MASTER_KEY"),
+		InternalAPIToken:  envOr("AGENTOS_INTERNAL_API_TOKEN", "internal-dev-token"),
 		LogLevel:          envOr("AGENTOS_LOG_LEVEL", "info"),
 		ServiceName:       envOr("AGENTOS_SERVICE_NAME", "agentos-control-plane"),
 		OTLPEndpoint:      envOr("AGENTOS_OTLP_ENDPOINT", ""),
@@ -71,6 +73,14 @@ func (c Config) validate() error {
 	}
 	if c.SessionTTL <= 0 {
 		return fmt.Errorf("config: AGENTOS_SESSION_TTL must be positive")
+	}
+	if c.Env == "production" {
+		if strings.TrimSpace(c.SecretsMasterKey) == "" {
+			return fmt.Errorf("config: AGENTOS_SECRETS_MASTER_KEY is required in production")
+		}
+		if strings.TrimSpace(c.InternalAPIToken) == "" || c.InternalAPIToken == "internal-dev-token" {
+			return fmt.Errorf("config: a strong AGENTOS_INTERNAL_API_TOKEN is required in production")
+		}
 	}
 	return nil
 }

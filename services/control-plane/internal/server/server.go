@@ -15,13 +15,16 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/httpx"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/models"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/organizations"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 )
 
 // Deps carries the wired application dependencies for feature routes.
 type Deps struct {
-	Store *store.Store
+	Store   *store.Store
+	Secrets *secrets.Manager
 }
 
 // NewRouter builds the top-level mux for the control plane API.
@@ -99,6 +102,33 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions", agentHandler.CreateVersion)
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions/{version}/publish", agentHandler.PublishVersion)
 		})
+	})
+
+	// Model gateway.
+	modelsHandler := &models.Handler{Store: deps.Store, Secrets: deps.Secrets, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/model-providers", func(mp chi.Router) {
+		mp.Use(requireAuth)
+		mp.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", modelsHandler.ListProviders)
+		mp.With(auth.RequireOrg(deps.Store, auth.PermManageCredentials, logger)).Post("/", modelsHandler.CreateProvider)
+		mp.Route("/{providerId}", func(provider chi.Router) {
+			provider.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/credentials", modelsHandler.ListCredentials)
+			provider.With(auth.RequireOrg(deps.Store, auth.PermManageCredentials, logger)).Post("/credentials", modelsHandler.CreateCredential)
+			provider.With(auth.RequireOrg(deps.Store, auth.PermManageCredentials, logger)).Delete("/credentials/{credentialId}", modelsHandler.RevokeCredential)
+		})
+	})
+	r.Route("/v1/organizations/{orgId}/models", func(mr chi.Router) {
+		mr.Use(requireAuth)
+		mr.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", modelsHandler.ListModels)
+		mr.With(auth.RequireOrg(deps.Store, auth.PermManageCredentials, logger)).Post("/", modelsHandler.CreateModel)
+	})
+
+	// Internal service-to-service surface (execution plane only).
+	internalHandler := &models.InternalHandler{
+		Store: deps.Store, Secrets: deps.Secrets, Token: cfg.InternalAPIToken, Logger: logger,
+	}
+	r.Route("/internal", func(internal chi.Router) {
+		internal.Use(internalHandler.RequireServiceToken)
+		internal.Get("/credentials/{credentialId}", internalHandler.RevealCredential)
 	})
 
 	// API root.
