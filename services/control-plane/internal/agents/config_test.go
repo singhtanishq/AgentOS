@@ -44,7 +44,7 @@ func TestConfigurationValidateRejections(t *testing.T) {
 		{"bad provider", func(c *Configuration) { c.Model.ProviderType = "skynet" }, "provider_type"},
 		{"missing model id", func(c *Configuration) { c.Model.ModelID = "" }, "model_id is required"},
 		{"temperature range", func(c *Configuration) { v := 2.5; c.Model.Temperature = &v }, "temperature"},
-		{"top_p range", func(c *Configuration) { v := 0; c.Model.TopP = &v }, "top_p"},
+		{"top_p range", func(c *Configuration) { v := 0.0; c.Model.TopP = &v }, "top_p"},
 		{"max_tokens range", func(c *Configuration) { v := 0; c.Model.MaxTokens = &v }, "max_tokens"},
 		{"duplicate tools", func(c *Configuration) {
 			c.Tools = []ToolBinding{{Name: "calculator"}, {Name: " calculator "}}
