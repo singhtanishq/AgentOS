@@ -18,7 +18,7 @@ import uuid
 import pytest
 
 from app.core.db import Database
-from app.engine.execution import ExecutionRunner
+from app.engine.execution import ApprovalRequestedError, ExecutionRunner
 from app.engine.job import Job
 from app.security.control_plane import ControlPlaneClient
 
@@ -135,6 +135,7 @@ async def seed_execution(
 
 
 async def make_runner(db: Database) -> ExecutionRunner:
+    from app.security.opa import OPAEvaluator
     from app.workers.nats_context import NatsContext
 
     nats_ctx = NatsContext(os.environ.get("AGENTOS_NATS_URL", "nats://localhost:4222"))
@@ -147,7 +148,39 @@ async def make_runner(db: Database) -> ExecutionRunner:
             await nats_ctx.publish_event(org, event_type, payload)
 
     control_plane = ControlPlaneClient("http://localhost:8080", "internal-dev-token")
-    return ExecutionRunner(db, ImmediateNats(), control_plane, "worker-test")
+    return ExecutionRunner(
+        db, ImmediateNats(), control_plane, "worker-test",
+        opa=OPAEvaluator(os.environ.get("AGENTOS_OPA_URL", "http://localhost:8181")),
+    )
+
+
+def _baseline_rego_path() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(
+        here, "..", "..", "control-plane", "internal", "policies", "agentos_baseline.rego"
+    )
+
+
+def _read_baseline_rego() -> str:
+    with open(_baseline_rego_path(), encoding="utf-8") as fh:
+        return fh.read()
+
+
+@pytest.fixture(scope="module", autouse=True)
+async def opa_baseline() -> None:
+    """Deploy the platform baseline policy so tool authorization works."""
+    import httpx
+
+    rego = await asyncio.to_thread(_read_baseline_rego)
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.put(
+            os.environ.get("AGENTOS_OPA_URL", "http://localhost:8181")
+            + "/v1/policies/agentos_baseline",
+            content=rego,
+            headers={"Content-Type": "text/plain"},
+        )
+        assert resp.status_code < 300, f"opa baseline deploy failed: {resp.text}"
 
 
 async def test_full_execution_with_tool_loop() -> None:
@@ -312,6 +345,92 @@ async def test_cancelled_execution_is_reported() -> None:
         # Cancelled-before-start: the runner claims it (queued → running is
         # allowed) and the loop observes cancel_requested at the first step.
         assert status in ("cancelled", "succeeded")
+    finally:
+        await api.close()
+        await worker.close()
+
+
+async def test_approval_flow_parks_and_resumes() -> None:
+    """A policy-required tool parks the execution; approval resumes it."""
+    api = Database(API_DSN)
+    worker = Database(WORKER_DSN)
+    await api.connect()
+    await worker.connect()
+    try:
+        org_id = str(uuid.uuid4())
+        agent_id, version_id = await seed_agent(
+            api, org_id,
+            tools=[{"name": "calculator", "config": {"approval": "required"}}],
+        )
+        execution_id = await seed_execution(
+            api, org_id, agent_id, version_id,
+            {"query": "Compute 7 * 6 for the report."},
+        )
+
+        # Give the calculator tool an approval requirement in the registry.
+        async with api.org_tx(org_id) as conn:
+            await conn.execute(
+                "UPDATE tools SET config = '{\"approval\": \"required\"}'::jsonb "
+                "WHERE organization_id = $1 AND name = 'calculator'",
+                org_id,
+            )
+            # And publish a custom policy marking it sensitive? The baseline
+            # honors tool.approval_required from engine input already.
+
+        job = Job(
+            execution_id=execution_id,
+            organization_id=org_id,
+            agent_id=agent_id,
+            agent_version_id=version_id,
+            input={"query": "Compute 7 * 6 for the report."},
+        )
+        runner = await make_runner(worker)
+        with pytest.raises(ApprovalRequestedError):
+            await runner.run(job)
+
+        # The execution is parked and an approval is pending.
+        async with worker.org_tx(org_id) as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM executions WHERE id = $1", execution_id
+            )
+            approval = await conn.fetchrow(
+                "SELECT id, status, action FROM approvals WHERE execution_id = $1",
+                execution_id,
+            )
+        assert row is not None and row["status"] == "waiting_approval"
+        assert approval is not None and approval["status"] == "pending"
+        assert approval["action"] == "tool.execute:calculator"
+
+        # An approver approves (mirrors the control plane decide handler:
+        # decision + resume run as the API role).
+        async with api.org_tx(org_id) as conn:
+            await conn.execute(
+                "UPDATE approvals SET status = 'approved', decided_at = now() "
+                "WHERE id = $1",
+                approval["id"],
+            )
+            await conn.execute(
+                "UPDATE executions SET status = 'running' WHERE id = $1 "
+                "AND status = 'waiting_approval'",
+                execution_id,
+            )
+
+        status = await runner.run(job)
+        assert status == "succeeded"
+        async with worker.org_tx(org_id) as conn:
+            row = await conn.fetchrow(
+                "SELECT status, tool_call_count FROM executions WHERE id = $1",
+                execution_id,
+            )
+            decisions = await conn.fetch(
+                "SELECT decision FROM policy_decisions WHERE execution_id = $1 "
+                "ORDER BY created_at",
+                execution_id,
+            )
+        assert row is not None and row["status"] == "succeeded"
+        assert row["tool_call_count"] == 1
+        assert any(d["decision"] == "allow" for d in decisions)
+        assert any(d["decision"] == "deny" for d in decisions) is False
     finally:
         await api.close()
         await worker.close()

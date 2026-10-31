@@ -27,7 +27,11 @@ async def run_all() -> None:
     await nats_ctx.connect()
 
     control_plane = ControlPlaneClient(settings.control_plane_url, settings.internal_api_token)
-    worker = ExecutionWorker(nats_ctx, db, control_plane)
+    from app.security.opa import OPAEvaluator
+
+    worker = ExecutionWorker(
+        nats_ctx, db, control_plane, opa=OPAEvaluator(settings.opa_url)
+    )
 
     shutdown = asyncio.Event()
 

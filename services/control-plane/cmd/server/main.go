@@ -19,6 +19,7 @@ import (
 
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/policies"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/queue"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/server"
@@ -77,8 +78,17 @@ func run() error {
 	}
 	readiness.Register("nats", func(ctx context.Context) error { return publisher.Healthy(ctx) })
 
+	// OPA policy deployer: pushes the baseline and organization policies.
+	deployer := &policies.Deployer{BaseURL: cfg.OPAURL, Logger: logger}
+	opaCtx, opaCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := deployer.EnsureBaseline(opaCtx); err != nil {
+		logger.Warn("opa baseline deploy failed — policy evaluation will fail closed",
+			slog.Any("error", err))
+	}
+	opaCancel()
+
 	srv := &http.Server{
-		Handler:           server.NewRouter(cfg, logger, readiness, &server.Deps{Store: st, Secrets: secretsManager, Publisher: publisher}),
+		Handler:           server.NewRouter(cfg, logger, readiness, &server.Deps{Store: st, Secrets: secretsManager, Publisher: publisher, PolicyDeployer: deployer}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

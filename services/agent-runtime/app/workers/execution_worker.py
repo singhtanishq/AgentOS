@@ -10,15 +10,19 @@ Acknowledgment policy:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import socket
+from typing import Any
 
 from nats.aio.msg import Msg
 
 from app.core.db import Database
 from app.core.state_machine import FAILED, RUNNING, ExecutionState
-from app.engine.execution import ExecutionRunner, QueueRetryableError
+from app.engine.execution import (
+    ApprovalRequestedError,
+    ExecutionRunner,
+    QueueRetryableError,
+)
 from app.engine.job import Job
 from app.security.control_plane import ControlPlaneClient
 from app.workers.nats_context import MAX_DELIVER, NatsContext
@@ -33,11 +37,16 @@ class ExecutionWorker:
     """Sequential job processor for the execution plane."""
 
     def __init__(
-        self, nats_ctx: NatsContext, db: Database, control_plane: ControlPlaneClient
+        self,
+        nats_ctx: NatsContext,
+        db: Database,
+        control_plane: ControlPlaneClient,
+        opa: Any | None = None,
     ) -> None:
         self._nats = nats_ctx
         self._db = db
         self._control_plane = control_plane
+        self._opa = opa
         self._worker_id = f"worker-{socket.gethostname()}-{id(self):x}"
 
     async def run_forever(self, shutdown: asyncio.Event) -> None:
@@ -71,9 +80,20 @@ class ExecutionWorker:
             },
         )
 
-        runner = ExecutionRunner(self._db, self._nats, self._control_plane, self._worker_id)
+        runner = ExecutionRunner(
+            self._db, self._nats, self._control_plane, self._worker_id, opa=self._opa
+        )
         try:
             status = await runner.run(job)
+        except ApprovalRequestedError as exc:
+            # The execution is parked in waiting_approval; the control plane
+            # re-publishes the job once an approver decides.
+            logger.info(
+                "execution waiting for approval",
+                extra={"execution_id": job.execution_id, "tool": str(exc)},
+            )
+            await msg.ack()
+            return
         except QueueRetryableError as exc:
             if meta.num_delivered >= MAX_DELIVER:
                 await self._exhaust(job, msg, f"retry budget exhausted: {exc.cause}")
@@ -136,7 +156,3 @@ class ExecutionWorker:
                 "unexpected-failure recording errored",
                 extra={"execution_id": job.execution_id},
             )
-
-
-def _serialize(payload: dict[str, object]) -> bytes:
-    return json.dumps(payload).encode()

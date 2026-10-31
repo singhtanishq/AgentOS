@@ -11,14 +11,17 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/agents"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/approvals"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/executions"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/httpx"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/identities"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/mcp"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/models"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/organizations"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/policies"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/queue"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
@@ -27,9 +30,10 @@ import (
 
 // Deps carries the wired application dependencies for feature routes.
 type Deps struct {
-	Store     *store.Store
-	Secrets   *secrets.Manager
-	Publisher *queue.Publisher
+	Store          *store.Store
+	Secrets        *secrets.Manager
+	Publisher      *queue.Publisher
+	PolicyDeployer *policies.Deployer
 }
 
 // NewRouter builds the top-level mux for the control plane API.
@@ -131,6 +135,33 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 			t.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", toolsHandler.Get)
 			t.With(auth.RequireOrg(deps.Store, auth.PermManageTools, logger)).Patch("/", toolsHandler.Update)
 		})
+	})
+
+	// Policies (governance).
+	policiesHandler := &policies.Handler{Store: deps.Store, Deployer: deps.PolicyDeployer, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/policies", func(pr chi.Router) {
+		pr.Use(requireAuth)
+		pr.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", policiesHandler.List)
+		pr.With(auth.RequireOrg(deps.Store, auth.PermManagePolicies, logger)).Post("/", policiesHandler.Create)
+		pr.With(auth.RequireOrg(deps.Store, auth.PermManagePolicies, logger)).Delete("/{policyId}", policiesHandler.Delete)
+	})
+
+	// Approvals.
+	approvalsHandler := &approvals.Handler{Store: deps.Store, Publisher: deps.Publisher, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/approvals", func(ar chi.Router) {
+		ar.Use(requireAuth)
+		ar.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", approvalsHandler.List)
+		ar.With(auth.RequireOrg(deps.Store, auth.PermDecideApprovals, logger)).Post("/{approvalId}/decide", approvalsHandler.Decide)
+	})
+
+	// Agent identities.
+	identitiesHandler := &identities.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/agents/{agentId}/identities", func(idn chi.Router) {
+		idn.Use(requireAuth)
+		idn.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", identitiesHandler.List)
+		idn.With(auth.RequireOrg(deps.Store, auth.PermManageCredentials, logger)).Post("/", identitiesHandler.Create)
+		idn.With(auth.RequireOrg(deps.Store, auth.PermManageCredentials, logger)).Post("/{identityId}/suspend", identitiesHandler.Suspend)
+		idn.With(auth.RequireOrg(deps.Store, auth.PermManageCredentials, logger)).Post("/{identityId}/revoke", identitiesHandler.Revoke)
 	})
 
 	// MCP connections.

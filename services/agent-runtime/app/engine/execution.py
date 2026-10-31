@@ -28,6 +28,7 @@ from app.core.state_machine import (
     RUNNING,
     SUCCEEDED,
     TIMED_OUT,
+    WAITING_APPROVAL,
     ExecutionState,
 )
 from app.engine import tools as toolgw
@@ -45,6 +46,14 @@ RETRYABLE_ERROR_KINDS = frozenset({"rate_limited", "overloaded", "timeout", "net
 
 class QueueRetryableError(Exception):
     """Wrap a retryable failure so the worker schedules a redelivery."""
+
+    def __init__(self, cause: str) -> None:
+        super().__init__(cause)
+        self.cause = cause
+
+
+class ApprovalRequestedError(Exception):
+    """A tool requires human approval; the execution now waits."""
 
     def __init__(self, cause: str) -> None:
         super().__init__(cause)
@@ -83,6 +92,12 @@ class RunStats:
         return round(cost)
 
 
+@dataclass(slots=True, frozen=True)
+class ToolDecision:
+    action: str  # allow | deny | approval_required
+    reason: str
+
+
 @dataclass(slots=True)
 class LoadedContext:
     """Everything the loop needs, loaded under the organization's RLS context."""
@@ -94,6 +109,7 @@ class LoadedContext:
     model_id: str
     tools: tuple[dict[str, Any], ...]
     tool_executors: dict[str, Any]
+    tool_specs: dict[str, Any] = field(default_factory=dict)
 
 
 class ExecutionRunner:
@@ -105,11 +121,15 @@ class ExecutionRunner:
         publisher: Any,
         control_plane: Any,
         worker_id: str,
+        opa: Any | None = None,
     ) -> None:
         self._db = db
         self._publisher = publisher
         self._control_plane = control_plane
         self._worker_id = worker_id
+        from app.security.opa import OPAEvaluator
+
+        self._opa = opa or OPAEvaluator("http://localhost:8181")
 
     async def run(self, job: Job) -> str:
         """Process one job; returns the final execution status."""
@@ -121,9 +141,9 @@ class ExecutionRunner:
             row = await state.load(conn)
             if row is None:
                 return "not_found"
-            if row["status"] == RUNNING:
+            if row["status"] in (RUNNING, WAITING_APPROVAL):
                 # Redelivery of an in-flight execution (retryable provider
-                # failure): resume instead of re-claiming.
+                # failure) or an approved-resume: continue processing.
                 pass
             elif row["status"] == QUEUED:
                 claimed = await state.transition(
@@ -240,7 +260,7 @@ class ExecutionRunner:
 
         # Tool resolution: only registry tools bound in the configuration.
         bound_names = [t.get("name", "") for t in configuration.get("tools", [])]
-        tool_executors = await self._load_tool_registry(conn, bound_names)
+        tool_executors, tool_specs = await self._load_tool_registry(conn, bound_names)
 
         model_cfg = configuration.get("model", {})
         provider_type = str(model_cfg.get("provider_type", "mock"))
@@ -272,6 +292,7 @@ class ExecutionRunner:
             model_id=model_id,
             tools=tuple(),
             tool_executors=tool_executors,
+            tool_specs=tool_specs,
         )
         if stats_pricing is not None:
             ctx.configuration["_pricing"] = {
@@ -297,7 +318,7 @@ class ExecutionRunner:
 
     async def _load_tool_registry(
         self, conn: Any, bound_names: list[str]
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Build executors for the bound tools from the org's registry.
 
         A bound tool that is missing, disabled or unknown is a terminal
@@ -305,7 +326,7 @@ class ExecutionRunner:
         declared capabilities.
         """
         if not bound_names:
-            return {}
+            return {}, {}
         rows = await conn.fetch(
             """
             SELECT name, kind, config, timeout_ms FROM tools
@@ -317,6 +338,7 @@ class ExecutionRunner:
         from app.mcp.client import MCPTool
 
         registry: dict[str, Any] = {}
+        tool_specs: dict[str, Any] = {}
         for row in rows:
             spec = ToolSpec(
                 name=row["name"],
@@ -324,6 +346,7 @@ class ExecutionRunner:
                 config=json.loads(row["config"] or "{}"),
                 timeout_seconds=max(1.0, row["timeout_ms"] / 1000.0),
             )
+            tool_specs[spec.name] = spec
             if spec.kind == "mcp":
                 connection = await conn.fetchrow(
                     """
@@ -344,7 +367,7 @@ class ExecutionRunner:
                     "tool_unavailable",
                     f"tool {name!r} is not active in the registry",
                 )
-        return registry
+        return registry, tool_specs
 
     # ------------------------------------------------------------------
     # The model/tool loop
@@ -514,6 +537,22 @@ class ExecutionRunner:
             )
             return ToolResult(False, {"error": str(exc)}, "invalid_arguments")
 
+        # Governance: every tool execution passes the policy engine.
+        decision = await self._authorize_tool(job, ctx, name)
+        if decision.action == "deny":
+            await telemetry.end_span(job.organization_id, span, "error")
+            await telemetry.event(
+                job.organization_id, job.execution_id, "policy.denied",
+                {"tool": name, "reason": decision.reason},
+            )
+            return ToolResult(
+                False, {"error": f"denied by policy: {decision.reason}"}, "policy_denied"
+            )
+        if decision.action == "approval_required":
+            await telemetry.end_span(job.organization_id, span, "unset")
+            await self._request_approval(job, name, arguments)
+            raise ApprovalRequestedError(name)
+
         await telemetry.event(
             job.organization_id, job.execution_id, "tool.requested",
             {"tool": name, "arguments": arguments},
@@ -535,6 +574,129 @@ class ExecutionRunner:
             {"tool": name, "ok": result.ok, "error_code": result.error_code},
         )
         return ToolResult(result.ok, result.output, result.error_code)
+
+    async def _authorize_tool(self, job: Job, ctx: LoadedContext, name: str) -> ToolDecision:
+        """Consult OPA for this tool execution. Fail-closed on errors."""
+        spec = ctx.tool_specs.get(name)
+        tool_cfg = spec.config if spec is not None else {}
+        approval_required_cfg = tool_cfg.get("approval") == "required"
+        approval_state = await self._approval_state(job, name)
+
+        policy_input = {
+            "action": "tool.execute",
+            "organization_id": job.organization_id,
+            "agent": {"id": job.agent_id, "status": ctx.agent_status},
+            "tool": {
+                "name": name,
+                "kind": spec.kind if spec is not None else "unknown",
+                "required_role": "developer",
+                "status": "active",
+                "approval_required": approval_required_cfg,
+            },
+            "identity": {"status": ""},
+            "approval": {"state": approval_state},
+        }
+        result = await self._opa.evaluate(policy_input)
+
+        # Order matters: allow=false WITH requires_approval is the normal
+        # pre-approval state, not a denial.
+        if result.requires_approval and approval_state != "approved":
+            return ToolDecision("approval_required", "human approval required by policy")
+        if not result.allow:
+            reason = (
+                result.reason
+                if result.reason != "policy_evaluated"
+                else "policy denied this action"
+            )
+            await self._log_decision(job, name, "deny", reason)
+            return ToolDecision("deny", reason)
+        await self._log_decision(job, name, "allow", "policy allowed this action")
+        return ToolDecision("allow", "allowed")
+
+    async def _approval_state(self, job: Job, tool_name: str) -> str:
+        async with self._db.org_tx(job.organization_id) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT status FROM approvals
+                WHERE execution_id = $1 AND action = $2
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                job.execution_id,
+                f"tool.execute:{tool_name}",
+            )
+        if row is None:
+            return "none"
+        return str(row["status"])
+
+    async def _log_decision(
+        self, job: Job, tool_name: str, decision: str, reason: str
+    ) -> None:
+        try:
+            async with self._db.org_tx(job.organization_id) as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO policy_decisions
+                        (organization_id, execution_id, agent_id, principal_type,
+                         principal_id, action, resource_type, resource_id, decision, reason)
+                    VALUES ($1, $2, $3, 'agent', $3, 'tool.execute', 'tool', $4, $5, $6)
+                    """,
+                    job.organization_id,
+                    job.execution_id,
+                    job.agent_id,
+                    tool_name,
+                    decision,
+                    reason,
+                )
+        except Exception:  # noqa: BLE001 - decision logging must not crash runs
+            logger.warning(
+                "policy decision logging failed",
+                extra={"execution_id": job.execution_id},
+            )
+
+    async def _request_approval(
+        self, job: Job, tool_name: str, arguments: dict[str, Any]
+    ) -> None:
+        """Create the approval request and park the execution."""
+        async with self._db.org_tx(job.organization_id) as conn:
+            existing = await conn.fetchval(
+                """
+                SELECT status FROM approvals
+                WHERE execution_id = $1 AND action = $2 AND status = 'pending'
+                LIMIT 1
+                """,
+                job.execution_id,
+                f"tool.execute:{tool_name}",
+            )
+            if existing is None:
+                await conn.execute(
+                    """
+                    INSERT INTO approvals
+                        (organization_id, execution_id, agent_id, action, resource, justification)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                    """,
+                    job.organization_id,
+                    job.execution_id,
+                    job.agent_id,
+                    f"tool.execute:{tool_name}",
+                    json.dumps({"tool": tool_name, "arguments": arguments}),
+                    "requested automatically by policy during execution",
+                )
+            state = ExecutionState(self._db.pool, job.execution_id)
+            await state.transition(
+                conn,
+                WAITING_APPROVAL,
+                current=RUNNING,
+                worker_id=self._worker_id,
+            )
+        await self._publisher.publish_event(
+            job.organization_id,
+            "approval.requested",
+            {
+                "execution_id": job.execution_id,
+                "tool": tool_name,
+                "agent_id": job.agent_id,
+            },
+        )
 
     async def _cancel_requested(self, job: Job) -> bool:
         row = await self._db.pool.fetchrow(
