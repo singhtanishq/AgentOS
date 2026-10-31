@@ -240,17 +240,7 @@ class ExecutionRunner:
 
         # Tool resolution: only registry tools bound in the configuration.
         bound_names = [t.get("name", "") for t in configuration.get("tools", [])]
-        tool_executors: dict[str, Any] = {}
-        if bound_names:
-            registry = build_builtin_registry()
-            for name in bound_names:
-                if name in registry:
-                    tool_executors[name] = registry[name]
-                else:
-                    raise TerminalExecutionError(
-                        "tool_unavailable",
-                        f"tool {name!r} is not available in the registry",
-                    )
+        tool_executors = await self._load_tool_registry(conn, bound_names)
 
         model_cfg = configuration.get("model", {})
         provider_type = str(model_cfg.get("provider_type", "mock"))
@@ -304,6 +294,57 @@ class ExecutionRunner:
             for name in tool_executors
         )
         return ctx
+
+    async def _load_tool_registry(
+        self, conn: Any, bound_names: list[str]
+    ) -> dict[str, Any]:
+        """Build executors for the bound tools from the org's registry.
+
+        A bound tool that is missing, disabled or unknown is a terminal
+        configuration error: the agent cannot run with a gap in its
+        declared capabilities.
+        """
+        if not bound_names:
+            return {}
+        rows = await conn.fetch(
+            """
+            SELECT name, kind, config, timeout_ms FROM tools
+            WHERE name = ANY($1) AND status = 'active'
+            """,
+            bound_names,
+        )
+        from app.engine.builtins import ToolSpec, build_registry
+        from app.mcp.client import MCPTool
+
+        registry: dict[str, Any] = {}
+        for row in rows:
+            spec = ToolSpec(
+                name=row["name"],
+                kind=row["kind"],
+                config=json.loads(row["config"] or "{}"),
+                timeout_seconds=max(1.0, row["timeout_ms"] / 1000.0),
+            )
+            if spec.kind == "mcp":
+                connection = await conn.fetchrow(
+                    """
+                    SELECT url, auth FROM mcp_connections
+                    WHERE organization_id = current_setting('agentos.org_id')::uuid
+                      AND name = $1 AND status = 'active'
+                    """,
+                    spec.config.get("connection", ""),
+                )
+                if connection is None:
+                    continue
+                registry[spec.name] = MCPTool(spec, dict(connection))
+            else:
+                registry.update(build_registry([spec]))
+        for name in bound_names:
+            if name not in registry:
+                raise TerminalExecutionError(
+                    "tool_unavailable",
+                    f"tool {name!r} is not active in the registry",
+                )
+        return registry
 
     # ------------------------------------------------------------------
     # The model/tool loop

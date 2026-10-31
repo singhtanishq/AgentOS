@@ -16,11 +16,13 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/executions"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/httpx"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/mcp"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/models"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/organizations"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/queue"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/tools"
 )
 
 // Deps carries the wired application dependencies for feature routes.
@@ -117,6 +119,29 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 			e.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", executionsHandler.Get)
 			e.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/events", executionsHandler.Events)
 			e.With(auth.RequireOrg(deps.Store, auth.PermCancelExecutions, logger)).Post("/cancel", executionsHandler.Cancel)
+		})
+	})
+
+	// Tool registry.
+	toolsHandler := &tools.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/tools", func(tr chi.Router) {
+		tr.Use(requireAuth)
+		tr.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", toolsHandler.List)
+		tr.Route("/{toolId}", func(t chi.Router) {
+			t.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", toolsHandler.Get)
+			t.With(auth.RequireOrg(deps.Store, auth.PermManageTools, logger)).Patch("/", toolsHandler.Update)
+		})
+	})
+
+	// MCP connections.
+	mcpHandler := &mcp.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/mcp-connections", func(mc chi.Router) {
+		mc.Use(requireAuth)
+		mc.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", mcpHandler.List)
+		mc.With(auth.RequireOrg(deps.Store, auth.PermManageTools, logger)).Post("/", mcpHandler.Create)
+		mc.Route("/{connectionId}", func(c chi.Router) {
+			c.With(auth.RequireOrg(deps.Store, auth.PermManageTools, logger)).Put("/status", mcpHandler.UpdateStatus)
+			c.With(auth.RequireOrg(deps.Store, auth.PermManageTools, logger)).Delete("/", mcpHandler.Delete)
 		})
 	})
 

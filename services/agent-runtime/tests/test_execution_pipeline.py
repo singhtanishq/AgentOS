@@ -71,6 +71,23 @@ async def seed_agent(
             "INSERT INTO agents (id, organization_id, name, status) VALUES ($1, $2, $3, $4)",
             agent_id, org_id, agent_name, agent_status,
         )
+        # Mirror the platform catalog seed (normally done at org creation).
+        await conn.execute(
+            """
+            INSERT INTO tools (organization_id, name, kind, description,
+                input_schema, output_schema, config, required_role, status, timeout_ms)
+            VALUES ($1, 'calculator', 'builtin', 'Evaluate arithmetic expressions safely.',
+                $2::jsonb, '{}'::jsonb, '{}'::jsonb, 'developer', 'active', 5000)
+            ON CONFLICT (organization_id, name) DO NOTHING
+            """,
+            org_id,
+            json.dumps({
+                "type": "object",
+                "properties": {"expression": {"type": "string"}},
+                "required": ["expression"],
+                "additionalProperties": False,
+            }),
+        )
         version_id = await conn.fetchval(
             """
             INSERT INTO agent_versions (organization_id, agent_id, version, configuration, status)

@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/toolcatalog"
+
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/audit"
 )
 
@@ -111,6 +113,11 @@ func CreateOrganizationTx(ctx context.Context, tx pgx.Tx, userID, name string) (
 		return OrganizationSummary{}, fmt.Errorf("insert owner membership: %w", err)
 	}
 	o.Role = string("owner")
+
+	// Every new organization starts with the platform builtin tool catalog.
+	if err := toolcatalog.SeedForOrganization(ctx, tx, o.ID); err != nil {
+		return OrganizationSummary{}, fmt.Errorf("seed tool catalog: %w", err)
+	}
 
 	if err := audit.Append(ctx, tx, audit.Entry{
 		OrganizationID: o.ID,
