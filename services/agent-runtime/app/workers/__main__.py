@@ -39,9 +39,15 @@ async def run_all() -> None:
 
     shutdown = asyncio.Event()
 
+    from app.main import create_app
+
+    # The API process owns the evaluation surface, so it shares the
+    # worker's database handle.
+    api_app = create_app(db)
+
     async def serve_api() -> None:
         config = uvicorn.Config(
-            "app.main:app",
+            api_app,
             host=settings.http_addr,
             port=settings.http_port,
             log_level=settings.log_level.lower(),

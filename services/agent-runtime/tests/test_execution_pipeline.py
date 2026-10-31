@@ -434,3 +434,74 @@ async def test_approval_flow_parks_and_resumes() -> None:
     finally:
         await api.close()
         await worker.close()
+
+
+async def test_evaluation_run_scores_dataset() -> None:
+    """A full evaluation run: cases execute against the mock provider and
+    deterministic rules score the outputs."""
+    from app.engine.evaluations import EvaluationRunner
+
+    api = Database(API_DSN)
+    worker = Database(WORKER_DSN)
+    await api.connect()
+    await worker.connect()
+    try:
+        org_id = str(uuid.uuid4())
+        agent_id, version_id = await seed_agent(api, org_id, tools=[])
+
+        async with api.org_tx(org_id) as conn:
+            dataset_id = await conn.fetchval(
+                "INSERT INTO evaluation_datasets (organization_id, name, description) "
+                "VALUES ($1, 'quarterly-report', 'report summarization checks') RETURNING id",
+                org_id,
+            )
+            # Case 1: deterministic pass (mock echoes the arithmetic answer).
+            await conn.execute(
+                """
+                INSERT INTO evaluation_cases (organization_id, dataset_id, name, input, rules)
+                VALUES ($1, $2, 'reports growth', '{"query": "Q3 grew 14%"}'::jsonb,
+                        '[{"type": "contains_all",
+                           "values": ["Analysis of", "Recommended action plan"]}]'::jsonb)
+                """,
+                org_id, dataset_id,
+            )
+            # Case 2: impossible rule → deterministic fail.
+            await conn.execute(
+                """
+                INSERT INTO evaluation_cases (organization_id, dataset_id, name, input, rules)
+                VALUES ($1, $2, 'mentions unicorn', '{"query": "summarize"}'::jsonb,
+                        '[{"type": "contains_any", "values": ["unicorn"]}]'::jsonb)
+                """,
+                org_id, dataset_id,
+            )
+
+        def provider_factory(org: str, provider_type: str, model_id: str) -> object:
+            from app.providers import build_provider
+
+            return build_provider("mock", "")
+
+        runner = EvaluationRunner(worker, provider_factory)
+        summary = await runner.run(org_id, str(dataset_id), agent_id, version_id)
+        assert summary["total_cases"] == 2
+        assert summary["passed_cases"] == 1
+        assert summary["pass_rate"] == 0.5
+        by_name = {c["name"]: c for c in summary["cases"]}
+        assert by_name["reports growth"]["passed"]
+        assert not by_name["mentions unicorn"]["passed"]
+
+        # Run persisted with results; second run yields a regression entry.
+        async with worker.org_tx(org_id) as conn:
+            run_row = await conn.fetchrow(
+                "SELECT status, pass_rate FROM evaluation_runs WHERE id = $1",
+                uuid.UUID(summary["run_id"]),
+            )
+        assert run_row is not None and run_row["status"] == "completed"
+        assert float(run_row["pass_rate"]) == 0.5
+
+        summary2 = await runner.run(org_id, str(dataset_id), agent_id, version_id)
+        assert summary2["regression"] is not None
+        assert summary2["regression"]["delta"] == 0.0
+        assert not summary2["regression"]["regressed"]
+    finally:
+        await api.close()
+        await worker.close()

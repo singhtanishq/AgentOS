@@ -11,12 +11,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app import __version__
+from app.core.db import Database
 
 Check = Callable[[], Awaitable[None]]
 
 
-def create_app() -> FastAPI:
-    """Build the runtime API application."""
+def create_app(db: Database | None = None) -> FastAPI:
+    """Build the runtime API application.
+
+    When a database handle is supplied (the supervised worker process),
+    internal evaluation routes are registered as well.
+    """
     app = FastAPI(
         title="AgentOS Agent Runtime",
         version=__version__,
@@ -87,6 +92,11 @@ def create_app() -> FastAPI:
             "version": __version__,
             "status": "initializing",
         }
+
+    if db is not None:
+        from app.api.evaluations import register_internal_routes
+
+        register_internal_routes(app, db)
 
     return app
 

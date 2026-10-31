@@ -17,6 +17,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/budgets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/deployments"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/evaluations"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/executions"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/httpx"
@@ -135,6 +136,27 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 		ar.Use(requireAuth)
 		ar.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", budgetsHandler.Alerts)
 		ar.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Post("/{alertId}/ack", budgetsHandler.AckAlert)
+	})
+
+	// Evaluations.
+	evaluationsHandler := &evaluations.Handler{
+		Store: deps.Store,
+		Runtime: &evaluations.RuntimeClient{
+			BaseURL: cfg.RuntimeInternal,
+			Token:   cfg.InternalAPIToken,
+		},
+		Logger: logger,
+	}
+	r.Route("/v1/organizations/{orgId}/evaluations", func(ev chi.Router) {
+		ev.Use(requireAuth)
+		ev.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/datasets", evaluationsHandler.ListDatasets)
+		ev.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/datasets", evaluationsHandler.CreateDataset)
+		ev.Route("/datasets/{datasetId}", func(d chi.Router) {
+			d.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/cases", evaluationsHandler.ListCases)
+			d.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/cases", evaluationsHandler.AddCase)
+			d.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/runs", evaluationsHandler.ListRuns)
+			d.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/runs", evaluationsHandler.TriggerRun)
+		})
 	})
 
 	// Observability: traces and span timelines.
