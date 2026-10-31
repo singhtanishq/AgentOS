@@ -14,6 +14,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/agents"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/apikeys"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/approvals"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auditlogs"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/budgets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
@@ -188,6 +189,11 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 		wh.With(auth.RequireOrg(deps.Store, auth.PermManageWebhooks, logger)).Post("/", webhooksHandler.Create)
 		wh.With(auth.RequireOrg(deps.Store, auth.PermManageWebhooks, logger)).Delete("/{webhookId}", webhooksHandler.Delete)
 	})
+
+	// Audit trail.
+	auditHandler := &auditlogs.Handler{Store: deps.Store, Logger: logger}
+	r.With(requireAuth, auth.RequireOrg(deps.Store, auth.PermViewAuditLog, logger)).
+		Get("/v1/organizations/{orgId}/audit-logs", auditHandler.List)
 
 	// Deployment management.
 	deploymentsHandler := &deployments.Handler{Store: deps.Store, Logger: logger}
