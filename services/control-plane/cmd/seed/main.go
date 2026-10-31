@@ -26,9 +26,9 @@ const (
 	orgName = "Acme Technologies"
 	orgSlug = "acme-technologies"
 
-	demoPassword   = "DemoPass123!"
-	demoMasterKey  = "3q2+7wIEo6rdSmdBnY5wTnCXBlPlLLaCtL9TZnSYz2o=" // matches the documented dev key
-	demoAPIKey     = "agos_demo_local_key_0000000000000000"
+	demoPassword  = "DemoPass123!"
+	demoMasterKey = "3q2+7wIEo6rdSmdBnY5wTnCXBlPlLLaCtL9TZnSYz2o=" // matches the documented dev key
+	demoAPIKey    = "agos_demo_local_key_0000000000000000"
 )
 
 type logger = slog.Logger

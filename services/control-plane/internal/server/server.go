@@ -49,6 +49,7 @@ type Deps struct {
 func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registry, deps *Deps) http.Handler {
 	r := chi.NewRouter()
 
+	r.Use(httpx.CORSMiddleware(httpx.DevOrigins()))
 	r.Use(httpx.RequestIDMiddleware)
 	r.Use(httpx.Recover(logger))
 	r.Use(httpx.Logging(logger))
