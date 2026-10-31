@@ -36,13 +36,17 @@ jobs:
         with:
           python-version: "3.13"
       - name: Sync dependencies
-        run: uv sync --project services/agent-runtime
+        run: uv sync
+        working-directory: services/agent-runtime
       - name: Ruff
-        run: uv run --project services/agent-runtime ruff check services/agent-runtime
+        run: uv run ruff check .
+        working-directory: services/agent-runtime
       - name: Mypy
-        run: uv run --project services/agent-runtime mypy services/agent-runtime/app
+        run: uv run mypy app
+        working-directory: services/agent-runtime
       - name: Tests
-        run: uv run --project services/agent-runtime pytest
+        run: uv run pytest
+        working-directory: services/agent-runtime
 
   python-sdk:
     name: Python SDK
@@ -53,13 +57,17 @@ jobs:
         with:
           python-version: "3.13"
       - name: Sync dependencies
-        run: uv sync --project services/sdk-python
+        run: uv sync
+        working-directory: services/sdk-python
       - name: Ruff
-        run: uv run --project services/sdk-python ruff check services/sdk-python
+        run: uv run ruff check .
+        working-directory: services/sdk-python
       - name: Mypy
-        run: uv run --project services/sdk-python mypy services/sdk-python/agentos
+        run: uv run mypy agentos
+        working-directory: services/sdk-python
       - name: Tests
-        run: uv run --project services/sdk-python pytest
+        run: uv run pytest
+        working-directory: services/sdk-python
 
   web:
     name: Web dashboard
