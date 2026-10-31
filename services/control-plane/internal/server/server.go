@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/agents"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/apikeys"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/approvals"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/budgets"
@@ -32,6 +33,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/tools"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/traces"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/webhooks"
 )
 
 // Deps carries the wired application dependencies for feature routes.
@@ -169,6 +171,23 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 
 	// Prometheus scrape endpoint (unauthenticated, infrastructure-only).
 	r.Handle("/metrics", promhttp.Handler())
+
+	// Developer platform: API keys and webhooks.
+	apiKeysHandler := &apikeys.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/api-keys", func(ak chi.Router) {
+		ak.Use(requireAuth)
+		ak.With(auth.RequireOrg(deps.Store, auth.PermManageAPIKeys, logger)).Get("/", apiKeysHandler.List)
+		ak.With(auth.RequireOrg(deps.Store, auth.PermManageAPIKeys, logger)).Post("/", apiKeysHandler.Create)
+		ak.With(auth.RequireOrg(deps.Store, auth.PermManageAPIKeys, logger)).Delete("/{keyId}", apiKeysHandler.Revoke)
+	})
+
+	webhooksHandler := &webhooks.Handler{Store: deps.Store, Secrets: deps.Secrets, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/webhooks", func(wh chi.Router) {
+		wh.Use(requireAuth)
+		wh.With(auth.RequireOrg(deps.Store, auth.PermManageWebhooks, logger)).Get("/", webhooksHandler.List)
+		wh.With(auth.RequireOrg(deps.Store, auth.PermManageWebhooks, logger)).Post("/", webhooksHandler.Create)
+		wh.With(auth.RequireOrg(deps.Store, auth.PermManageWebhooks, logger)).Delete("/{webhookId}", webhooksHandler.Delete)
+	})
 
 	// Deployment management.
 	deploymentsHandler := &deployments.Handler{Store: deps.Store, Logger: logger}

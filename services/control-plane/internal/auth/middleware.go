@@ -55,28 +55,11 @@ func RoleFrom(ctx context.Context) Role {
 	return ""
 }
 
-// RequireAuth authenticates the session cookie and injects the identity
-// into the request context. Sessions are renewed when near expiry.
+// RequireAuth authenticates the caller via session cookie or bearer API
+// key and injects the principal into the request context. Sessions are
+// renewed when near expiry.
 func RequireAuth(st *store.Store, cookieName string, logger *slog.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			c, err := r.Cookie(cookieName)
-			if err != nil || c.Value == "" {
-				httpx.Error(w, r, http.StatusUnauthorized, "unauthorized", "authentication required")
-				return
-			}
-			session, err := ResolveSession(r.Context(), st, c.Value)
-			if err != nil {
-				httpx.Error(w, r, http.StatusUnauthorized, "unauthorized", "session expired or invalid")
-				return
-			}
-			TouchSession(r.Context(), st, session)
-
-			ctx := context.WithValue(r.Context(), ctxUserID, session.UserID)
-			ctx = context.WithValue(ctx, ctxSessionID, session.ID)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
+	return AuthMiddleware(st, cookieName, logger)
 }
 
 // RequireOrg resolves the {orgId} route parameter, verifies membership via

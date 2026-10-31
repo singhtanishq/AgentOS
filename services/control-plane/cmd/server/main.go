@@ -25,6 +25,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/server"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/telemetry"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/webhooks"
 )
 
 func main() {
@@ -78,6 +79,13 @@ func run() error {
 		return fmt.Errorf("ensure jetstream topology: %w", err)
 	}
 	readiness.Register("nats", func(ctx context.Context) error { return publisher.Healthy(ctx) })
+
+	// Webhook dispatcher: consumes platform events and delivers signed
+	// webhooks with retry bookkeeping.
+	dispatcher := &webhooks.Dispatcher{Store: st, Secrets: secretsManager, Logger: logger}
+	if err := dispatcher.ConsumeEvents(context.Background(), publisher.JetStream(), logger); err != nil {
+		logger.Warn("webhook dispatcher unavailable", slog.Any("error", err))
+	}
 
 	// OpenTelemetry + Prometheus instrumentation.
 	otelCtx, otelCancel := context.WithTimeout(context.Background(), 15*time.Second)
