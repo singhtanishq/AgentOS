@@ -1,0 +1,11 @@
+{
+  "name": "@agentos/config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared TypeScript and lint configuration for AgentOS frontend packages",
+  "files": [
+    "tsconfig.base.json",
+    "tsconfig.nextjs.json",
+    "eslint.config.base.mjs"
+  ]
+}

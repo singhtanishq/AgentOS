@@ -1,0 +1,5 @@
+# AgentOS pnpm workspace — frontend packages and shared libraries.
+# Go and Python services live in services/ and are managed by go/uv.
+packages:
+  - "apps/*"
+  - "packages/*"

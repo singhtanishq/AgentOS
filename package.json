@@ -1,0 +1,17 @@
+{
+  "name": "agentos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentOS — The Enterprise Control Plane for AI Agents",
+  "packageManager": "pnpm@10.18.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:web": "pnpm --filter @agentos/web dev",
+    "build:web": "pnpm --filter @agentos/web build",
+    "lint:web": "pnpm --filter @agentos/web lint",
+    "typecheck:web": "pnpm --filter @agentos/web typecheck",
+    "test:web": "pnpm --filter @agentos/web test"
+  }
+}
