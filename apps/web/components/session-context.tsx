@@ -4,6 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 
 export interface SessionUser {
@@ -47,13 +48,7 @@ async function fetchSession(): Promise<SessionData> {
   return api<SessionData>("/v1/auth/session");
 }
 
-export function SessionProvider({
-  children,
-  onUnauthorized,
-}: {
-  children: React.ReactNode;
-  onUnauthorized: () => void;
-}) {
+export function SessionProvider({ children }: { children: React.ReactNode }) {
   const query = useQuery({
     queryKey: ["session"],
     queryFn: fetchSession,
@@ -61,8 +56,19 @@ export function SessionProvider({
     staleTime: 60_000,
   });
 
+  return <SessionGate query={query}>{children}</SessionGate>;
+}
+
+function SessionGate({
+  query,
+  children,
+}: {
+  query: ReturnType<typeof useQuery<SessionData>>;
+  children: React.ReactNode;
+}) {
+  const router = useRouter();
   if (query.isError) {
-    onUnauthorized();
+    router.replace("/login");
     return null;
   }
   if (!query.data) {

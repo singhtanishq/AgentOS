@@ -3,9 +3,7 @@
 // Root providers: TanStack Query + session gate with client-side redirect.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { SessionProvider } from "@/components/session-context";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -23,13 +21,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
         },
       }),
   );
-  const router = useRouter();
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <SessionProvider onUnauthorized={() => router.replace("/login")}>
-        {children}
-      </SessionProvider>
-    </QueryClientProvider>
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
 }
