@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	neturl "net/url"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -100,19 +102,20 @@ func testPool(t *testing.T) *pgxpool.Pool {
 		}
 	})
 	if poolErr != nil {
-		t.Skipf("integration database unavailable: %v", poolErr)
+		// Setup failures must be loud: a silent skip would report the
+		// integration suite as green while testing nothing.
+		t.Fatalf("integration database setup failed: %v", poolErr)
 	}
 	return pool
 }
 
-func replaceDBName(url, db string) string {
-	// URLs in this project are of the form postgres://user:pass@host:port/db?args
-	for i := len(url) - 1; i >= 0; i-- {
-		if url[i] == '/' {
-			return url[:i+1] + db + url[min(i+1, len(url)):]
-		}
+func replaceDBName(rawURL, db string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return rawURL
 	}
-	return url
+	u.Path = "/" + db
+	return u.String()
 }
 
 // orgCtx sets the transaction organization/user context, mirroring how the
@@ -126,6 +129,19 @@ func orgCtx(ctx context.Context, tx pgx.Tx, org, user string) error {
 	}
 	_, err := tx.Exec(ctx, "SELECT set_config('agentos.user_id', $1, true)", user)
 	return err
+}
+
+// runInTx runs fn in a fresh transaction (pgx v5 pools have no BeginFunc).
+func runInTx(ctx context.Context, p *pgxpool.Pool, fn func(pgx.Tx) error) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func mustExec(t *testing.T, tx pgx.Tx, sql string, args ...any) commandTag {
@@ -261,23 +277,16 @@ func TestRLSTenantIsolation(t *testing.T) {
 	})
 }
 
-func replaceUser(url, user string) string {
-	// postgres://user:pass@...
-	start := 0
-	for i, r := range url {
-		if r == '/' && i > 0 {
-			start = i + 1
-			break
-		}
+func replaceUser(rawURL, user string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return rawURL
 	}
-	end := start
-	for i := start; i < len(url); i++ {
-		if url[i] == '@' {
-			end = i
-			break
-		}
+	if u.User != nil {
+		pass, _ := u.User.Password()
+		u.User = neturl.UserPassword(user, pass)
 	}
-	return url[:start] + user + url[end:]
+	return u.String()
 }
 
 func TestAgentVersionImmutability(t *testing.T) {
@@ -324,10 +333,17 @@ func TestAgentVersionImmutability(t *testing.T) {
 		versionID); err == nil {
 		t.Fatal("published agent version configuration was mutated, want immutability guard rejection")
 	}
-	// Reading it back must still show the original configuration.
+	// Reading it back (under org context — RLS applies) must show the
+	// original configuration.
 	var config []byte
-	if err := p.QueryRow(ctx,
-		"SELECT configuration FROM agent_versions WHERE id = $1", versionID).Scan(&config); err != nil {
+	err = runInTx(ctx, p, func(tx pgx.Tx) error {
+		if err := orgCtx(ctx, tx, org, ""); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx,
+			"SELECT configuration FROM agent_versions WHERE id = $1", versionID).Scan(&config)
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if string(config) != `{"instructions": "v1"}` {
@@ -397,16 +413,29 @@ func TestBudgetAtomicEnforcement(t *testing.T) {
 
 	// The enforcement statement used by the metering path: a conditional
 	// atomic increment. Two concurrent spends of 600 against a 1000 limit
-	// must yield exactly one success.
+	// must yield exactly one success. Each attempt carries its own tenant
+	// context on its own connection, mirroring concurrent executions.
 	spend := func() bool {
-		tag, err := p.Exec(ctx, `
-			UPDATE budgets
-			SET spent_minor = spent_minor + $2
-			WHERE id = $1 AND spent_minor + $2 <= limit_minor`, budgetID, 600)
+		var allowed bool
+		err := runInTx(ctx, p, func(tx pgx.Tx) error {
+			if err := orgCtx(ctx, tx, org, ""); err != nil {
+				return err
+			}
+			tag, err := tx.Exec(ctx, `
+				UPDATE budgets
+				SET spent_minor = spent_minor + $2
+				WHERE id = $1 AND spent_minor + $2 <= limit_minor`, budgetID, 600)
+			if err != nil {
+				return err
+			}
+			allowed = tag.RowsAffected() == 1
+			return nil
+		})
 		if err != nil {
-			t.Fatalf("budget spend: %v", err)
+			t.Errorf("budget spend: %v", err)
+			return false
 		}
-		return tag.RowsAffected() == 1
+		return allowed
 	}
 
 	var wg sync.WaitGroup
@@ -431,7 +460,13 @@ func TestBudgetAtomicEnforcement(t *testing.T) {
 	}
 
 	var spent int64
-	if err := p.QueryRow(ctx, "SELECT spent_minor FROM budgets WHERE id = $1", budgetID).Scan(&spent); err != nil {
+	err = runInTx(ctx, p, func(tx pgx.Tx) error {
+		if err := orgCtx(ctx, tx, org, ""); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, "SELECT spent_minor FROM budgets WHERE id = $1", budgetID).Scan(&spent)
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if spent != 600 {

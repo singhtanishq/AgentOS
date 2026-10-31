@@ -37,12 +37,12 @@ GRANT USAGE ON SCHEMA public TO agentos_api, agentos_worker;
 -- ----------------------------------------------------------------
 CREATE OR REPLACE FUNCTION agentos_current_org() RETURNS uuid
 LANGUAGE sql STABLE AS $$
-    SELECT current_setting('agentos.org_id', true)::uuid
+    SELECT NULLIF(current_setting('agentos.org_id', true), '')::uuid
 $$;
 
 CREATE OR REPLACE FUNCTION agentos_current_user_id() RETURNS uuid
 LANGUAGE sql STABLE AS $$
-    SELECT current_setting('agentos.user_id', true)::uuid
+    SELECT NULLIF(current_setting('agentos.user_id', true), '')::uuid
 $$;
 
 -- SECURITY DEFINER: membership check before an organization context exists
@@ -52,7 +52,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
     SELECT EXISTS (
         SELECT 1 FROM memberships m
         WHERE m.organization_id = target_org
-          AND m.user_id = agentos_current_user_id()
+          AND m.user_id = NULLIF(current_setting('agentos.user_id', true), '')::uuid
     )
 $$;
 

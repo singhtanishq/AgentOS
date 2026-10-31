@@ -30,8 +30,8 @@ type Config struct {
 	SecretsMasterKey  string // base64 AES-256 key for credential encryption (32 bytes decoded)
 
 	// Observability.
-	LogLevel    string
-	ServiceName string
+	LogLevel     string
+	ServiceName  string
 	OTLPEndpoint string
 }
 

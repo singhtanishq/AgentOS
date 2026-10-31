@@ -16,6 +16,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/server"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 )
 
 func main() {
@@ -40,8 +41,16 @@ func run() error {
 
 	readiness := health.NewRegistry()
 
+	// Database connection: required. Readiness tracks it continuously.
+	st, err := store.New(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+	defer st.Close()
+	readiness.Register("postgres", func(ctx context.Context) error { return st.Ping(ctx) })
+
 	srv := &http.Server{
-		Handler:           server.NewRouter(cfg, logger, readiness),
+		Handler:           server.NewRouter(cfg, logger, readiness, &server.Deps{Store: st}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
