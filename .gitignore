@@ -22,8 +22,8 @@ AgentOS.md
 *.cer
 *.jks
 *.keystore
-secrets/
-private/
+/secrets/
+/private/
 credentials/
 credentials.json
 service-account.json

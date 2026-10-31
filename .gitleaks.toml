@@ -1,0 +1,28 @@
+# Gitleaks configuration for AgentOS.
+#
+# The repository intentionally contains documented, local-only demo
+# credentials (they are seeded into every local environment and printed by
+# `make seed`). They are not real secrets and are never used outside a
+# local demo. Everything else still follows the default gitleaks rules.
+
+title = "AgentOS gitleaks config"
+
+[allowlist]
+description = "Documented local demo credentials (seeded by cmd/seed)"
+regexes = [
+  '''agos_demo_local_key_[0-9a-zA-Z]+''',
+  '''DemoPass123!''',
+  '''agentos_dev''',
+  '''agentos_app_dev''',
+  '''agentos_minio_dev''',
+  '''agentos_grafana_dev''',
+  '''whsec_demo_local_signing_key_[0-9a-zA-Z]+''',
+  '''sk-mock-acme-demo-key''',
+]
+paths = [
+  '''README\.md''',
+  '''docs/''',
+  '''services/control-plane/cmd/seed/''',
+  '''\.env\.example$''',
+  '''docker-compose\.yml$''',
+]
