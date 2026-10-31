@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go control plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: services/control-plane/go.sum
+      - name: Vet
+        run: go vet -C services/control-plane ./...
+      - name: Unit tests (race detector)
+        run: go test -C services/control-plane -race ./...
+      - name: Build
+        run: go build -C services/control-plane ./...
+
+  python-runtime:
+    name: Python agent runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies
+        run: uv sync --project services/agent-runtime
+      - name: Ruff
+        run: uv run --project services/agent-runtime ruff check .
+      - name: Mypy
+        run: uv run --project services/agent-runtime mypy app
+      - name: Tests
+        run: uv run --project services/agent-runtime pytest
+
+  python-sdk:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies
+        run: uv sync --project services/sdk-python
+      - name: Ruff
+        run: uv run --project services/sdk-python ruff check .
+      - name: Mypy
+        run: uv run --project services/sdk-python mypy agentos
+      - name: Tests
+        run: uv run --project services/sdk-python pytest
+
+  web:
+    name: Web dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm --filter @agentos/web lint
+      - name: Typecheck
+        run: pnpm --filter @agentos/web typecheck
+      - name: Unit tests
+        run: pnpm --filter @agentos/web test
+      - name: Build
+        run: pnpm --filter @agentos/web build
+
+  integration:
+    name: Integration tests (PostgreSQL + NATS)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: agentos
+          POSTGRES_PASSWORD: agentos_dev
+          POSTGRES_DB: agentos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentos"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+      nats:
+        image: nats:2.11-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          --health-cmd "wget -q -O /dev/null http://localhost:8222/healthz || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+      opa:
+        image: openpolicyagent/opa:1.12.3-static
+        ports:
+          - 8181:8181
+        args: ["run", "--server", "--addr=0.0.0.0:8181"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: services/control-plane/go.sum
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Go migrations + integration tests
+        run: go test -C services/control-plane -tags=integration -count=1 ./tests/ ./migrations/
+      - name: Seed runtime test schema
+        run: |
+          go run -C services/control-plane ./cmd/migrate \
+            --url "postgres://agentos:agentos_dev@localhost:5432/agentos?sslmode=disable"
+      - name: Python execution pipeline tests
+        working-directory: services/agent-runtime
+        env:
+          AGENTOS_INTEGRATION: "1"
+          TEST_DATABASE_API_URL: postgres://agentos_api:agentos_app_dev@localhost:5432/agentos
+          TEST_DATABASE_WORKER_URL: postgres://agentos_worker:agentos_app_dev@localhost:5432/agentos
+        run: |
+          # Roles are created by the Go migration run above (cluster-wide).
+          uv run pytest tests/test_execution_pipeline.py
