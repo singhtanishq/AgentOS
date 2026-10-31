@@ -183,11 +183,11 @@ cloud-config/
 # ============================================================
 # GENERATED AI / MODEL ARTIFACTS
 # ============================================================
-models/
-checkpoints/
-model-cache/
-huggingface-cache/
-transformers-cache/
+/models/
+/checkpoints/
+/model-cache/
+/huggingface-cache/
+/transformers-cache/
 *.safetensors
 *.gguf
 *.onnx
