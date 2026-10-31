@@ -1,1 +1,214 @@
+# ============================================================
+# PRIVATE PROJECT INSTRUCTIONS
+# ============================================================
 AgentOS.md
+
+# ============================================================
+# ENVIRONMENT VARIABLES AND SECRETS
+# ============================================================
+.env
+.env.*
+!.env.example
+*.env
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.keystore
+secrets/
+private/
+credentials/
+credentials.json
+service-account.json
+serviceAccountKey.json
+*service-account*.json
+*serviceAccount*.json
+*credentials*.json
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+
+# ============================================================
+# NODE.JS / TYPESCRIPT
+# ============================================================
+node_modules/
+.pnpm-store/
+.next/
+out/
+dist/
+build/
+.turbo/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log
+.eslintcache
+
+# ============================================================
+# PYTHON
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.python-version.local
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+site-packages/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+wheels/
+.pybuild/
+.uv/
+
+# ============================================================
+# GO
+# ============================================================
+*.exe
+*.test
+*.out
+/vendor/
+control-plane
+agentos-control-plane
+
+# ============================================================
+# IDE / EDITOR
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+# ============================================================
+# DATABASE AND LOCAL DATA
+# ============================================================
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.bak
+*.backup
+*.sql.gz
+local-data/
+database-data/
+postgres-data/
+redis-data/
+nats-data/
+minio-data/
+volumes/
+data/local/
+data/private/
+
+# ============================================================
+# LOGS / TRACES / PROFILING
+# ============================================================
+logs/
+*.log.*
+*.trace
+*.prof
+*.cpuprofile
+*.heapprofile
+tmp/
+temp/
+
+# ============================================================
+# TEST OUTPUT AND GENERATED REPORTS
+# ============================================================
+test-results/
+playwright-report/
+playwright/.cache/
+artifacts/
+*.junit.xml
+*.sarif
+*.lcov
+
+# ============================================================
+# BUILD / DEPLOYMENT OUTPUT
+# ============================================================
+.cache/
+.vercel/
+.netlify/
+.serverless/
+terraform/.terraform/
+cdk.out/
+helm/charts/*.tgz
+
+# ============================================================
+# LOCAL CERTIFICATES AND TLS
+# ============================================================
+certs/
+certificates/
+tls/
+*.csr
+
+# ============================================================
+# LOCAL CLOUD CONFIGURATION
+# ============================================================
+.aws/
+.gcloud/
+.azure/
+.kube/
+.kubeconfig
+kubeconfig
+kubeconfigs/
+cloud-config/
+
+# ============================================================
+# GENERATED AI / MODEL ARTIFACTS
+# ============================================================
+models/
+checkpoints/
+model-cache/
+huggingface-cache/
+transformers-cache/
+*.safetensors
+*.gguf
+*.onnx
+*.pt
+*.pth
+
+# ============================================================
+# GENERATED EXECUTION ARTIFACTS
+# ============================================================
+execution-artifacts/
+agent-artifacts/
+runtime-artifacts/
+uploads/
+private-uploads/
+exports/private/
+
+# ============================================================
+# LOCAL TOOL STATE / PRIVATE LEDGER
+# ============================================================
+.pyright/
+.parcel-cache/
+.mypy_cache/
+ledger/
+.ledger/
+*.ledger.local
