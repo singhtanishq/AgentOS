@@ -78,6 +78,8 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AgentID        string          `json:"agent_id"`
 		AgentVersionID string          `json:"agent_version_id"`
+		Environment    string          `json:"environment"`
+		IdentityID     string          `json:"identity_id"`
 		Input          json.RawMessage `json:"input"`
 		IdempotencyKey string          `json:"idempotency_key"`
 	}
@@ -87,6 +89,16 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AgentID == "" {
 		httpx.Error(w, r, http.StatusBadRequest, "validation_failed", "agent_id is required")
+		return
+	}
+	if req.Environment == "" {
+		req.Environment = "production"
+	}
+	switch req.Environment {
+	case "development", "staging", "production":
+	default:
+		httpx.Error(w, r, http.StatusBadRequest, "validation_failed",
+			"environment must be development, staging or production")
 		return
 	}
 	if len(req.Input) == 0 {
@@ -112,17 +124,29 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 			return errAgentNotActive
 		}
 
-		// Version: explicit or the latest published.
+		// Version: explicit, else from the environment's active deployment,
+		// else the latest published. Identity rides on the submission.
+		var deploymentID string
+		identityID := req.IdentityID
 		versionID := req.AgentVersionID
 		if versionID == "" {
 			err := tx.QueryRow(r.Context(), `
-				SELECT id FROM agent_versions
-				WHERE agent_id = $1 AND status = 'published'
-				ORDER BY version DESC LIMIT 1`, req.AgentID).Scan(&versionID)
+				SELECT agent_version_id FROM deployments
+				WHERE agent_id = $1 AND environment = $2 AND status = 'active'
+				ORDER BY created_at DESC LIMIT 1`, req.AgentID, req.Environment,
+			).Scan(&versionID)
 			if errors.Is(err, pgx.ErrNoRows) {
-				return errNoPublishedVersion
-			}
-			if err != nil {
+				err2 := tx.QueryRow(r.Context(), `
+					SELECT id FROM agent_versions
+					WHERE agent_id = $1 AND status = 'published'
+					ORDER BY version DESC LIMIT 1`, req.AgentID).Scan(&versionID)
+				if errors.Is(err2, pgx.ErrNoRows) {
+					return errNoPublishedVersion
+				}
+				if err2 != nil {
+					return err2
+				}
+			} else if err != nil {
 				return err
 			}
 		} else {
@@ -139,8 +163,9 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 
 		// Idempotent insert: a duplicate key returns the original row.
 		row := tx.QueryRow(r.Context(), `
-			INSERT INTO executions (organization_id, agent_id, agent_version_id, input, idempotency_key)
-			VALUES ($1, $2, $3, $4, NULLIF($5, ''))
+			INSERT INTO executions
+				(organization_id, agent_id, agent_version_id, deployment_id, identity_id, input, idempotency_key)
+			VALUES ($1, $2, $3, NULLIF($6, '')::uuid, NULLIF($7, '')::uuid, $4, NULLIF($5, ''))
 			ON CONFLICT (organization_id, idempotency_key) WHERE idempotency_key IS NOT NULL
 			DO UPDATE SET updated_at = now()
 			RETURNING id, organization_id, agent_id, agent_version_id, status,
@@ -149,7 +174,8 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 				total_tokens, cost_estimate_minor,
 				started_at::text, completed_at::text, created_at::text,
 				(xmax = 0) AS inserted`,
-			orgID, req.AgentID, versionID, req.Input, req.IdempotencyKey)
+			orgID, req.AgentID, versionID, req.Input, req.IdempotencyKey,
+			deploymentID, identityID)
 
 		var inserted bool
 		var outputPtr, errPtr []byte

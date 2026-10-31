@@ -14,6 +14,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/approvals"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/deployments"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/executions"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/health"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/httpx"
@@ -111,6 +112,22 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions", agentHandler.CreateVersion)
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions/{version}/publish", agentHandler.PublishVersion)
 		})
+	})
+
+	// Deployment management.
+	deploymentsHandler := &deployments.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/deployments", func(dr chi.Router) {
+		dr.Use(requireAuth)
+		dr.With(auth.RequireOrg(deps.Store, auth.PermViewAgents, logger)).Get("/", deploymentsHandler.List)
+	})
+	r.Route("/v1/organizations/{orgId}/agents/{agentId}/deploy", func(dp chi.Router) {
+		dp.Use(requireAuth)
+		dp.With(auth.RequireOrg(deps.Store, auth.PermManageDeployments, logger)).Post("/", deploymentsHandler.Deploy)
+	})
+	r.Route("/v1/organizations/{orgId}/deployments/{deploymentId}", func(dd chi.Router) {
+		dd.Use(requireAuth)
+		dd.With(auth.RequireOrg(deps.Store, auth.PermManageDeployments, logger)).Post("/deactivate", deploymentsHandler.Deactivate)
+		dd.With(auth.RequireOrg(deps.Store, auth.PermManageDeployments, logger)).Post("/rollback", deploymentsHandler.Rollback)
 	})
 
 	// Execution management.
