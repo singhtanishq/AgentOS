@@ -176,6 +176,7 @@ class ExecutionRunner:
                 "execution.started",
                 {"worker_id": self._worker_id, "agent_id": job.agent_id},
             )
+            await self._check_budgets(job)
             output = await self._run_loop(job, ctx, stats, telemetry, started)
             await self._finalize_success(job, ctx, stats, telemetry, output)
             return SUCCEEDED
@@ -711,6 +712,108 @@ class ExecutionRunner:
             total_tokens=stats.prompt_tokens + stats.completion_tokens,
         )
 
+    async def _check_budgets(self, job: Job) -> None:
+        """Block the execution when a blocking budget is already exhausted.
+
+        Enforcement semantics: budget-blocked organizations/agents refuse
+        NEW executions; executions already running complete (grace).
+        """
+        async with self._db.org_tx(job.organization_id) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT b.id, b.name, b.limit_minor, b.enforcement_action,
+                       (SELECT COALESCE(SUM(u.cost_estimate_minor), 0)
+                        FROM usage_records u
+                        WHERE u.organization_id = $1
+                          AND (b.agent_id IS NULL OR u.agent_id = b.agent_id)
+                          AND u.created_at >= b.period_started_at) AS spent
+                FROM budgets b
+                WHERE b.organization_id = $1
+                  AND b.status = 'active'
+                  AND b.enforcement_action = 'block'
+                  AND (b.agent_id IS NULL OR b.agent_id = $2)
+                """,
+                job.organization_id,
+                job.agent_id,
+            )
+        for row in rows:
+            if row["spent"] >= row["limit_minor"]:
+                async with self._db.org_tx(job.organization_id) as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO alerts
+                            (organization_id, type, severity, title, message,
+                             resource_type, resource_id, execution_id)
+                        VALUES ($1, 'budget_exceeded', 'critical', $2, $3,
+                                'budget', $4::text, $5)
+                        """,
+                        job.organization_id,
+                        f"Budget {row['name']!r} exhausted",
+                        "execution blocked: budget spend has reached the configured limit",
+                        str(row["id"]),
+                        job.execution_id,
+                    )
+                raise TerminalExecutionError(
+                    "budget_exceeded",
+                    f"execution blocked: budget {row['name']!r} spend reached its limit",
+                )
+
+    async def _record_budget_spend(
+        self, job: Job, stats: RunStats
+    ) -> None:
+        """Refresh budget spend aggregates and raise threshold alerts."""
+        cost = stats.cost_estimate_minor()
+        if cost <= 0:
+            return
+        async with self._db.org_tx(job.organization_id) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, limit_minor, thresholds, agent_id,
+                       (SELECT COALESCE(SUM(u.cost_estimate_minor), 0)
+                        FROM usage_records u
+                        WHERE u.organization_id = $1
+                          AND (b.agent_id IS NULL OR u.agent_id = b.agent_id)
+                          AND u.created_at >= b.period_started_at) AS spent
+                FROM budgets b
+                WHERE b.organization_id = $1 AND b.status = 'active'
+                  AND (b.agent_id IS NULL OR b.agent_id = $2)
+                """,
+                job.organization_id,
+                job.agent_id,
+            )
+        for row in rows:
+            spent = int(row["spent"])
+            limit = int(row["limit_minor"])
+            if limit <= 0:
+                continue
+            pct = spent * 100 // limit
+            thresholds = row["thresholds"] or {}
+            for key in ("50", "80", "100"):
+                threshold = int(key)
+                if pct >= threshold and thresholds.get(key) in ("alert", "enforce"):
+                    severity = "critical" if threshold >= 100 else "warning"
+                    async with self._db.org_tx(job.organization_id) as conn:
+                        await conn.execute(
+                            """
+                            INSERT INTO alerts
+                                (organization_id, type, severity, title, message,
+                                 resource_type, resource_id)
+                            SELECT $1, 'budget_threshold', $2, $3, $4, 'budget', $5::text
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM alerts
+                                WHERE organization_id = $1 AND type = 'budget_threshold'
+                                  AND resource_id = $5::text
+                                  AND severity = $2
+                                  AND created_at > now() - interval '1 hour'
+                            )
+                            """,
+                            job.organization_id,
+                            severity,
+                            f"Budget {row['name']!r} at {pct}%",
+                            f"spend {spent} of {limit} minor units in the current period",
+                            str(row["id"]),
+                        )
+
     async def _cancel_requested(self, job: Job) -> bool:
         row = await self._db.pool.fetchrow(
             "SELECT cancel_requested FROM executions WHERE id = $1", job.execution_id
@@ -809,6 +912,7 @@ class ExecutionRunner:
                 stats.cost_estimate_minor(),
                 pricing,
             )
+        await self._record_budget_spend(job, stats)
         await telemetry.finish_trace(job.organization_id, job.execution_id, "ok")
         await telemetry.event(
             job.organization_id, job.execution_id, "execution.completed",

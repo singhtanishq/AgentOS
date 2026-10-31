@@ -14,6 +14,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/agents"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/approvals"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/budgets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/config"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/deployments"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/executions"
@@ -115,6 +116,25 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions", agentHandler.CreateVersion)
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions/{version}/publish", agentHandler.PublishVersion)
 		})
+	})
+
+	// Budgets, usage analytics and alerts.
+	budgetsHandler := &budgets.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/budgets", func(br chi.Router) {
+		br.Use(requireAuth)
+		br.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", budgetsHandler.List)
+		br.With(auth.RequireOrg(deps.Store, auth.PermManageBudgets, logger)).Post("/", budgetsHandler.Create)
+		br.Route("/{budgetId}", func(b chi.Router) {
+			b.With(auth.RequireOrg(deps.Store, auth.PermManageBudgets, logger)).Patch("/", budgetsHandler.Update)
+			b.With(auth.RequireOrg(deps.Store, auth.PermManageBudgets, logger)).Delete("/", budgetsHandler.Delete)
+		})
+	})
+	r.With(requireAuth, auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).
+		Get("/v1/organizations/{orgId}/usage", budgetsHandler.UsageSummary)
+	r.Route("/v1/organizations/{orgId}/alerts", func(ar chi.Router) {
+		ar.Use(requireAuth)
+		ar.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", budgetsHandler.Alerts)
+		ar.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Post("/{alertId}/ack", budgetsHandler.AckAlert)
 	})
 
 	// Observability: traces and span timelines.
