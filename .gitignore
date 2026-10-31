@@ -88,8 +88,9 @@ wheels/
 *.test
 *.out
 /vendor/
-control-plane
-agentos-control-plane
+/services/control-plane/server
+/services/control-plane/control-plane
+/services/control-plane/agentos-control-plane
 
 # ============================================================
 # IDE / EDITOR
