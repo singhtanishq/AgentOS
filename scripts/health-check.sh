@@ -19,7 +19,9 @@ check "agent runtime liveness" http://localhost:8090/healthz || status=1
 check "agent runtime readiness" http://localhost:8090/readyz || status=1
 check "dashboard" http://localhost:3000/ || status=1
 check "nats monitoring" http://localhost:8222/healthz || status=1
+check "object storage (s3)" http://localhost:9333/cluster/status || status=1
 check "opa" http://localhost:8181/health || status=1
+check "otel collector" http://localhost:13133/ || status=1
 check "prometheus" http://localhost:9090/-/healthy || status=1
 check "grafana" http://localhost:3001/api/health || status=1
 

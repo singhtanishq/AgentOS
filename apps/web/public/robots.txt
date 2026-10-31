@@ -1,0 +1,3 @@
+# AgentOS is a private enterprise control plane — not a public website.
+User-agent: *
+Disallow: /
