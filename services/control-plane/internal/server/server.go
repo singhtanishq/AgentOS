@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/agents"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/approvals"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/auth"
@@ -24,9 +25,11 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/organizations"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/policies"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/queue"
+
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/tools"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/traces"
 )
 
 // Deps carries the wired application dependencies for feature routes.
@@ -113,6 +116,17 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness *health.Registr
 			agent.With(auth.RequireOrg(deps.Store, auth.PermEditAgents, logger)).Post("/versions/{version}/publish", agentHandler.PublishVersion)
 		})
 	})
+
+	// Observability: traces and span timelines.
+	tracesHandler := &traces.Handler{Store: deps.Store, Logger: logger}
+	r.Route("/v1/organizations/{orgId}/traces", func(tr chi.Router) {
+		tr.Use(requireAuth)
+		tr.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/", tracesHandler.List)
+		tr.With(auth.RequireOrg(deps.Store, auth.PermViewExecutions, logger)).Get("/{traceId}", tracesHandler.Get)
+	})
+
+	// Prometheus scrape endpoint (unauthenticated, infrastructure-only).
+	r.Handle("/metrics", promhttp.Handler())
 
 	// Deployment management.
 	deploymentsHandler := &deployments.Handler{Store: deps.Store, Logger: logger}

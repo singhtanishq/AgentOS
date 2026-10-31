@@ -24,6 +24,7 @@ import (
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/secrets"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/server"
 	"github.com/singhtanishq/AgentOS/services/control-plane/internal/store"
+	"github.com/singhtanishq/AgentOS/services/control-plane/internal/telemetry"
 )
 
 func main() {
@@ -77,6 +78,23 @@ func run() error {
 		return fmt.Errorf("ensure jetstream topology: %w", err)
 	}
 	readiness.Register("nats", func(ctx context.Context) error { return publisher.Healthy(ctx) })
+
+	// OpenTelemetry + Prometheus instrumentation.
+	otelCtx, otelCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	providers, err := telemetry.Init(otelCtx, cfg.ServiceName, cfg.OTLPEndpoint, logger)
+	otelCancel()
+	if err != nil {
+		logger.Warn("telemetry init failed", slog.Any("error", err))
+	}
+	defer func() {
+		if providers != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer shutdownCancel()
+			if err := providers.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("telemetry shutdown failed", slog.Any("error", err))
+			}
+		}
+	}()
 
 	// OPA policy deployer: pushes the baseline and organization policies.
 	deployer := &policies.Deployer{BaseURL: cfg.OPAURL, Logger: logger}

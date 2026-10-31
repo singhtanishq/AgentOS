@@ -20,6 +20,10 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 async def run_all() -> None:
     settings = get_settings()
 
+    from app.telemetry import metrics as otel_metrics
+
+    otel_metrics.init_metrics(settings.otlp_endpoint or None)
+
     db = Database(settings.worker_database_url)
     await db.connect()
 

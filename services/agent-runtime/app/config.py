@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     database_url: str = "postgres://agentos:agentos_dev@localhost:5432/agentos"
     # The worker connects with the narrow agentos_worker role.
     worker_database_url: str = "postgres://agentos_worker:agentos_app_dev@localhost:5432/agentos"
+    # OTLP metrics endpoint (e.g. http://localhost:4318). Empty disables
+    # metric export.
+    otlp_endpoint: str = ""
+
     # Shared secret for control-plane internal endpoints. The default is a
     # documented local development value; production requires an override
     # (validated by the control plane config on its side).

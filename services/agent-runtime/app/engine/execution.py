@@ -36,6 +36,7 @@ from app.engine.job import Job
 from app.engine.tools import ToolResult
 from app.providers import build_provider
 from app.providers.base import Message, ModelRequest, ProviderError
+from app.telemetry import metrics as otel_metrics
 from app.telemetry.events import ExecutionTelemetry
 
 logger = logging.getLogger(__name__)
@@ -122,11 +123,13 @@ class ExecutionRunner:
         control_plane: Any,
         worker_id: str,
         opa: Any | None = None,
+        started_at: float | None = None,
     ) -> None:
         self._db = db
         self._publisher = publisher
         self._control_plane = control_plane
         self._worker_id = worker_id
+        self._started_at = started_at if started_at is not None else time.monotonic()
         from app.security.opa import OPAEvaluator
 
         self._opa = opa or OPAEvaluator("http://localhost:8181")
@@ -698,6 +701,16 @@ class ExecutionRunner:
             },
         )
 
+    def _record_metrics(self, status: str, stats: RunStats) -> None:
+        duration_ms = int((time.monotonic() - self._started_at) * 1000)
+        otel_metrics.record_execution_outcome(
+            status=status,
+            provider=stats.provider_name,
+            model=stats.model_name,
+            duration_ms=duration_ms,
+            total_tokens=stats.prompt_tokens + stats.completion_tokens,
+        )
+
     async def _cancel_requested(self, job: Job) -> bool:
         row = await self._db.pool.fetchrow(
             "SELECT cancel_requested FROM executions WHERE id = $1", job.execution_id
@@ -807,6 +820,7 @@ class ExecutionRunner:
                 "cost_estimate_minor": stats.cost_estimate_minor(),
             },
         )
+        self._record_metrics(SUCCEEDED, stats)
 
     async def _finalize_failure(
         self,
@@ -833,6 +847,7 @@ class ExecutionRunner:
                 job.organization_id, job.execution_id, "execution.failed",
                 {"status": status, "error": error},
             )
+            self._record_metrics(status, stats)
         except Exception:  # noqa: BLE001 - finalization must never mask the cause
             logger.exception(
                 "failure finalization errored", extra={"execution_id": job.execution_id}
